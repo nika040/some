@@ -1,127 +1,253 @@
 "use client";
-import { useState, useEffect } from "react";
-import sdk from "@farcaster/miniapp-sdk";
-import { useMiniApp } from "./providers/MiniAppProvider";
-import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import { useAccount, useConnect, useDisconnect } from "wagmi";
 import { farcasterConfig } from "../farcaster.config";
+import { useMiniApp } from "./providers/MiniAppProvider";
 import styles from "./page.module.css";
 
-interface AuthResponse {
-  success: boolean;
-  user?: {
-    fid: number; // FID is the unique identifier for the user
-    issuedAt?: number;
-    expiresAt?: number;
-  };
-  message?: string; // Error messages come as 'message' not 'error'
-}
+const WORDS = [
+  "farcaster",
+  "base",
+  "wallet",
+  "protocol",
+  "smart",
+  "contract",
+  "onchain",
+  "gasless",
+  "miniapp",
+  "builder",
+  "token",
+  "signal",
+  "viral",
+  "campaign",
+  "community",
+  "developer",
+  "launch",
+  "bridge",
+  "staking",
+  "quest",
+  "mint",
+  "badge",
+  "score",
+  "challenge",
+  "arcade",
+  "lighthouse",
+];
 
+const GAME_LENGTH_SECONDS = 60;
+const WRONG_PENALTY = 2;
+const SKIP_PENALTY = 3;
+
+const scramble = (word: string) => {
+  const chars = word.split("");
+  for (let i = chars.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  const scrambled = chars.join("");
+  return scrambled === word ? scramble(word) : scrambled;
+};
 
 export default function Home() {
-  const { context, isReady } = useMiniApp();
-  const [email, setEmail] = useState("");
-  const [error, setError] = useState("");
-  const router = useRouter();
- 
-  
+  const { context } = useMiniApp();
+  const { address, isConnected } = useAccount();
+  const { connectors, connect, isPending } = useConnect();
+  const { disconnect } = useDisconnect();
 
-  // If you need to verify the user's identity, you can use the SDK's quickAuth.
-  // This will verify the user's signature and return the user's FID. You can update
-  // this to meet your needs. See the /app/api/auth/route.ts file for more details.
-  // Note: If you don't need to verify the user's identity, you can get their FID and other user data
-  // via `context.user.fid`.
-  const [authData, setAuthData] = useState<AuthResponse | null>(null);
-  const [isAuthLoading, setIsAuthLoading] = useState(true);
-  const [authError, setAuthError] = useState<Error | null>(null);
+  const [currentWord, setCurrentWord] = useState("");
+  const [scrambledWord, setScrambledWord] = useState("");
+  const [guess, setGuess] = useState("");
+  const [score, setScore] = useState(0);
+  const [streak, setStreak] = useState(0);
+  const [timeLeft, setTimeLeft] = useState(GAME_LENGTH_SECONDS);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [message, setMessage] = useState("");
 
-  useEffect(() => {
-    const authenticate = async () => {
-      try {
-        const response = await sdk.quickAuth.fetch('/api/auth');
-        const data = await response.json();
-        setAuthData(data);
-      } catch (err) {
-        setAuthError(err as Error);
-      } finally {
-        setIsAuthLoading(false);
-      }
-    };
+  const connector = useMemo(() => connectors[0], [connectors]);
 
-    if (isReady) {
-      authenticate();
-    }
-  }, [isReady]);
-
-  const validateEmail = (email: string) => {
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    return emailRegex.test(email);
+  const pickWord = (previous?: string) => {
+    const candidates = WORDS.filter((word) => word !== previous);
+    return candidates[Math.floor(Math.random() * candidates.length)];
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
+  const prepareWord = (previous?: string) => {
+    const next = pickWord(previous);
+    setCurrentWord(next);
+    setScrambledWord(scramble(next));
+    setGuess("");
+  };
 
-    // Check authentication first
-    if (isAuthLoading) {
-      setError("Please wait while we verify your identity...");
+  useEffect(() => {
+    if (!isPlaying) {
       return;
     }
 
-    if (authError || !authData?.success) {
-      setError("Please authenticate to join the waitlist");
+    if (timeLeft <= 0) {
+      setIsPlaying(false);
+      setMessage("Time! Tap play again to beat your score.");
       return;
     }
 
-    if (!email) {
-      setError("Please enter your email address");
+    const timer = window.setTimeout(() => {
+      setTimeLeft((value) => value - 1);
+    }, 1000);
+
+    return () => window.clearTimeout(timer);
+  }, [isPlaying, timeLeft]);
+
+  const handleConnect = () => {
+    if (!connector) {
+      setMessage("No wallet connector available.");
+      return;
+    }
+    connect({ connector });
+  };
+
+  const startGame = () => {
+    if (!isConnected) {
+      setMessage("Connect your Base account to play.");
+      return;
+    }
+    setScore(0);
+    setStreak(0);
+    setTimeLeft(GAME_LENGTH_SECONDS);
+    setIsPlaying(true);
+    setMessage("Unscramble as many words as you can.");
+    prepareWord();
+  };
+
+  const submitGuess = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!isPlaying) {
       return;
     }
 
-    if (!validateEmail(email)) {
-      setError("Please enter a valid email address");
+    const cleanedGuess = guess.trim().toLowerCase();
+    if (!cleanedGuess) {
+      setMessage("Type a word and press enter.");
       return;
     }
 
-    // TODO: Save email to database/API with user FID
-    console.log("Valid email submitted:", email);
-    console.log("User authenticated:", authData.user);
-    
-    // Navigate to success page
-    router.push("/success");
+    if (cleanedGuess === currentWord.toLowerCase()) {
+      setScore((value) => value + 1);
+      setStreak((value) => value + 1);
+      setMessage("Perfect! Keep the streak.");
+      prepareWord(currentWord);
+      return;
+    }
+
+    setStreak(0);
+    setTimeLeft((value) => Math.max(0, value - WRONG_PENALTY));
+    setMessage("Close! Try again or skip.");
+  };
+
+  const skipWord = () => {
+    if (!isPlaying) {
+      return;
+    }
+    setStreak(0);
+    setTimeLeft((value) => Math.max(0, value - SKIP_PENALTY));
+    setMessage("Skipped. New scramble incoming.");
+    prepareWord(currentWord);
   };
 
   return (
     <div className={styles.container}>
-      <button className={styles.closeButton} type="button">
-        ✕
-      </button>
-      
-      <div className={styles.content}>
-        <div className={styles.waitlistForm}>
-          <h1 className={styles.title}>Join {farcasterConfig.miniapp.name.toUpperCase()}</h1>
-          
-          <p className={styles.subtitle}>
-             Hey {context?.user?.displayName || "there"}, Get early access and be the first to experience the future of<br />
-            crypto marketing strategy.
-          </p>
+      <header className={styles.header}>
+        <div className={styles.brand}>
+          <span className={styles.title}>{farcasterConfig.miniapp.name}</span>
+          <span className={styles.badge}>Word Mini Game</span>
+        </div>
+        <div className={styles.connectRow}>
+          {isConnected ? (
+            <>
+              <div className={styles.accountPill}>
+                {context?.user?.displayName || "Base Player"}
+                <span className={styles.address}>
+                  {address ? `${address.slice(0, 6)}...${address.slice(-4)}` : ""}
+                </span>
+              </div>
+              <button className={styles.ghostButton} onClick={() => disconnect()} type="button">
+                Disconnect
+              </button>
+            </>
+          ) : (
+            <button
+              className={styles.connectButton}
+              onClick={handleConnect}
+              type="button"
+              disabled={isPending}
+            >
+              {isPending ? "Connecting..." : "Connect Base Account"}
+            </button>
+          )}
+        </div>
+      </header>
 
-          <form onSubmit={handleSubmit} className={styles.form}>
+      <main className={styles.content}>
+        <section className={styles.gameCard}>
+          <div className={styles.stats}>
+            <div className={styles.stat}>
+              <span className={styles.statLabel}>Score</span>
+              <span className={styles.statValue}>{score}</span>
+            </div>
+            <div className={styles.stat}>
+              <span className={styles.statLabel}>Streak</span>
+              <span className={styles.statValue}>{streak}</span>
+            </div>
+            <div className={styles.stat}>
+              <span className={styles.statLabel}>Time</span>
+              <span className={styles.statValue}>{timeLeft}s</span>
+            </div>
+          </div>
+
+          <div className={styles.wordBox}>
+            <p className={styles.scrambleLabel}>Scrambled Word</p>
+            <p className={styles.scrambled}>{isPlaying ? scrambledWord : "Press Play"}</p>
+            <p className={styles.hint}>
+              Build your score by solving words fast. Wrong guesses cost {WRONG_PENALTY}s.
+            </p>
+          </div>
+
+          <form className={styles.inputRow} onSubmit={submitGuess}>
             <input
-              type="email"
-              placeholder="Your amazing email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className={styles.emailInput}
+              className={styles.input}
+              type="text"
+              placeholder="Type the word..."
+              value={guess}
+              onChange={(event) => setGuess(event.target.value)}
+              disabled={!isPlaying}
             />
-            
-            {error && <p className={styles.error}>{error}</p>}
-            
-            <button type="submit" className={styles.joinButton}>
-              JOIN WAITLIST
+            <button className={styles.primaryButton} type="submit" disabled={!isPlaying}>
+              Submit
             </button>
           </form>
-        </div>
-      </div>
+
+          <div className={styles.actionRow}>
+            <button className={styles.secondaryButton} type="button" onClick={startGame}>
+              {isPlaying ? "Restart" : "Play"}
+            </button>
+            <button
+              className={styles.ghostButton}
+              type="button"
+              onClick={skipWord}
+              disabled={!isPlaying}
+            >
+              Skip (-{SKIP_PENALTY}s)
+            </button>
+          </div>
+
+          {message && <p className={styles.message}>{message}</p>}
+        </section>
+
+        <section className={styles.footerCard}>
+          <h2 className={styles.footerTitle}>How it works</h2>
+          <p className={styles.footerText}>
+            Connect with your Base account to unlock the word sprint. Solve as many scrambled
+            words as possible before time runs out. Keep the streak alive for higher bragging rights.
+          </p>
+        </section>
+      </main>
     </div>
   );
 }
