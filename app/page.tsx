@@ -38,7 +38,7 @@ const GAME_LENGTH_SECONDS = 60;
 const WRONG_PENALTY = 2;
 const SKIP_PENALTY = 3;
 
-const scramble = (word: string) => {
+const scramble = (word: string): string => {
   const chars = word.split("");
   for (let i = chars.length - 1; i > 0; i -= 1) {
     const j = Math.floor(Math.random() * (i + 1));
